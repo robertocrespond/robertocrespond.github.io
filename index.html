@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<title>Financial Plan</title>
+<meta name="description" content="A personal financial planner — accounts, life stages, goals, scenarios, and projections." />
+
+<!-- iOS "Add to Home Screen" behavior -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Financial Plan" />
+<link rel="apple-touch-icon" href="./icons/icon-180.png" />
+<meta name="theme-color" content="#0b3a35" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" href="./icons/icon-192.png" />
+
+<!-- Tailwind (Play CDN — utility classes only, no build step) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Import map: browser resolves bare specifiers straight to ESM CDN builds, no bundler needed -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1/",
+    "recharts": "https://esm.sh/recharts@2.12.7?external=react,react-dom",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react"
+  }
+}
+</script>
+
+<style>
+  html, body, #root { height: 100%; }
+  body { margin: 0; -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+  #boot-fallback { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, system-ui, sans-serif; color: #78716c; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div id="root"><div id="boot-fallback">Loading your plan…</div></div>
+
+  <script type="module" src="./app.js"></script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
