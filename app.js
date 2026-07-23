@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import ReactDOM from "react-dom/client";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, LineChart, Line } from "recharts";
-import { Wallet, CalendarRange, Target, TrendingUp, LineChart as LineChartIcon, Sun, Moon, Lock, Car, Home, GraduationCap, Plane, Heart, Gift, Briefcase, PiggyBank, Baby, MapPin, Sparkles, ChevronDown, ChevronUp, ArrowUpRight, ArrowDownRight, Landmark, Receipt, AlertTriangle, CheckCircle2, X, Layers } from "lucide-react";
+import { Wallet, CalendarRange, Target, TrendingUp, LineChart as LineChartIcon, Sun, Moon, Lock, Car, Home, GraduationCap, Plane, Heart, Gift, Briefcase, PiggyBank, Baby, MapPin, Sparkles, ChevronDown, ChevronUp, ArrowUpRight, ArrowDownRight, Landmark, Receipt, AlertTriangle, CheckCircle2, X, Layers, Zap } from "lucide-react";
 // ---------- localStorage-backed shim for window.storage (same API the app already calls) ----------
 if (typeof window !== "undefined" && !window.storage) {
     const PREFIX = "fp:";
@@ -32,6 +32,7 @@ const fmt = (n) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(n)).toLocaleString
 const ICONS = { Car, Home, GraduationCap, Plane, Heart, Gift, Briefcase, PiggyBank, Baby, MapPin, Sparkles, Landmark };
 const GOAL_ICON_OPTS = ["Car", "Home", "GraduationCap", "Plane", "Heart", "Gift", "Briefcase", "PiggyBank"];
 const STAGE_ICON_OPTS = ["Home", "Baby", "MapPin", "Briefcase", "GraduationCap", "Heart", "Plane", "Sparkles"];
+const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 const ACCOUNT_COLORS = { checking: "#8fae9c", savings: "#5f9c86", investment: "#2f6f62", other: "#7a8f8a" };
 const GOAL_COLORS = ["#c17f3e", "#b5654f", "#a37a3e", "#8f5a3e", "#c19a3e"];
 const SCENARIO_COLORS = ["#2f6f62", "#c17f3e", "#7a6fa3", "#b5654f", "#3e7fa3"];
@@ -70,6 +71,10 @@ const DEFAULT_STATE = {
             allocations: {} },
     ],
     goals: [{ id: uid(), name: "New car", icon: "Car", targetAge: 40, cost: 35000, returnRate: 3, prefundStartAge: 36, contribution: 7000 }],
+    events: [
+        { id: uid(), name: "Work bonus", age: 38, amount: 15000, accountId: "acc-invest", inflationAdjusted: true },
+        { id: uid(), name: "Home repair", age: 42, amount: -12000, accountId: "acc-savings", inflationAdjusted: true },
+    ],
     scenarios: [
         { id: "sc-cons", name: "Conservative", delta: -2 },
         { id: "sc-exp", name: "Expected", delta: 0 },
@@ -85,33 +90,65 @@ function migrate(loaded) {
     const s = structuredClone(loaded);
     if (!s.theme)
         s.theme = "light";
-    if (!s.scenarios)
+    if (!s.scenarios || !s.scenarios.length)
         s.scenarios = DEFAULT_STATE.scenarios;
-    if (!s.activeScenarioId)
-        s.activeScenarioId = "sc-exp";
+    if (!s.activeScenarioId || !s.scenarios.some((sc) => sc.id === s.activeScenarioId))
+        s.activeScenarioId = s.scenarios[0].id;
     if (!s.displayMode)
         s.displayMode = "nominal";
-    if (s.profile && s.profile.raiseRate === undefined)
-        s.profile.raiseRate = (s.income && s.income.growth) || 2;
+    s.profile = s.profile || {};
+    if (typeof s.profile.currentAge !== "number" || isNaN(s.profile.currentAge))
+        s.profile.currentAge = DEFAULT_STATE.profile.currentAge;
+    if (typeof s.profile.retirementAge !== "number" || isNaN(s.profile.retirementAge))
+        s.profile.retirementAge = DEFAULT_STATE.profile.retirementAge;
+    if (typeof s.profile.lifeExpectancy !== "number" || isNaN(s.profile.lifeExpectancy))
+        s.profile.lifeExpectancy = DEFAULT_STATE.profile.lifeExpectancy;
+    if (s.profile.lifeExpectancy < s.profile.currentAge)
+        s.profile.lifeExpectancy = s.profile.currentAge; // guard against an inverted range producing a broken/empty simulation
+    if (typeof s.profile.inflation !== "number" || isNaN(s.profile.inflation))
+        s.profile.inflation = DEFAULT_STATE.profile.inflation;
+    if (typeof s.profile.raiseRate !== "number" || isNaN(s.profile.raiseRate))
+        s.profile.raiseRate = (s.income && s.income.growth) || DEFAULT_STATE.profile.raiseRate;
+    s.accounts = (s.accounts || []).map((a) => ({
+        id: a.id || uid(),
+        name: a.name || "Account",
+        type: a.type || "savings",
+        balance: typeof a.balance === "number" && !isNaN(a.balance) ? a.balance : 0,
+        returnRate: typeof a.returnRate === "number" && !isNaN(a.returnRate) ? a.returnRate : 0,
+        locked: !!a.locked,
+        unlockAge: typeof a.unlockAge === "number" && !isNaN(a.unlockAge) ? a.unlockAge : 59.5,
+    }));
+    if (s.accounts.length === 0)
+        s.accounts = structuredClone(DEFAULT_STATE.accounts);
     if (!s.stages)
         s.stages = [];
     const legacyIncome = s.income ? s.income.annual : 0;
     s.stages.forEach((st) => {
-        if (st.income === undefined)
+        if (st.income === undefined || isNaN(st.income))
             st.income = legacyIncome || 0;
-        if (st.taxRate === undefined)
+        if (st.taxRate === undefined || isNaN(st.taxRate))
             st.taxRate = 22;
         if (st.icon === undefined)
             st.icon = "Briefcase";
+        if (typeof st.startAge !== "number" || isNaN(st.startAge))
+            st.startAge = s.profile.currentAge;
+        if (typeof st.endAge !== "number" || isNaN(st.endAge))
+            st.endAge = s.profile.lifeExpectancy;
+        st.expenses = (st.expenses || []).map((e) => ({
+            id: e.id || uid(), name: e.name || "Expense",
+            amount: typeof e.amount === "number" && !isNaN(e.amount) ? e.amount : 0,
+            inflationAdjusted: e.inflationAdjusted !== false,
+        }));
         if (!st.allocations) {
             // migrate old flat $ contributions into % of that stage's estimated surplus
-            const totalExp = (st.expenses || []).reduce((sum, e) => sum + e.amount, 0);
+            const totalExp = st.expenses.reduce((sum, e) => sum + e.amount, 0);
             const goalDollars = (s.goals || []).reduce((sum, g) => sum + goalAvgContribForStage(g, st, s.profile), 0);
             const estSurplus = st.income * (1 - st.taxRate / 100) - totalExp - goalDollars;
             const allocations = {};
             if (st.contributions && estSurplus > 0) {
                 Object.entries(st.contributions).forEach(([accId, dollars]) => {
-                    allocations[accId] = Math.max(0, Math.min(100, Math.round((dollars / estSurplus) * 100)));
+                    const pct = (dollars / estSurplus) * 100;
+                    allocations[accId] = Math.max(0, Math.min(100, isNaN(pct) ? 0 : Math.round(pct)));
                 });
             }
             st.allocations = allocations;
@@ -122,11 +159,29 @@ function migrate(loaded) {
         s.stages = [{ id: uid(), name: "Now", icon: "Briefcase", startAge: s.profile.currentAge, endAge: s.profile.lifeExpectancy,
                 income: legacyIncome || 0, taxRate: 22, expenses: [], allocations: {} }];
     }
-    (s.accounts || []).forEach((a) => { delete a.contribution; if (a.locked === undefined)
-        a.locked = false; if (a.unlockAge === undefined)
-        a.unlockAge = 59.5; });
-    (s.goals || []).forEach((g) => { if (!g.icon)
-        g.icon = "Gift"; });
+    s.goals = (s.goals || []).map((g) => ({
+        id: g.id || uid(),
+        name: g.name || "Goal",
+        icon: g.icon || "Gift",
+        targetAge: typeof g.targetAge === "number" && !isNaN(g.targetAge) ? g.targetAge : s.profile.currentAge + 5,
+        cost: typeof g.cost === "number" && !isNaN(g.cost) ? g.cost : 0,
+        returnRate: typeof g.returnRate === "number" && !isNaN(g.returnRate) ? g.returnRate : 0,
+        prefundStartAge: typeof g.prefundStartAge === "number" && !isNaN(g.prefundStartAge) ? g.prefundStartAge : s.profile.currentAge,
+        contribution: typeof g.contribution === "number" && !isNaN(g.contribution) ? g.contribution : 0,
+    })).map((g) => (g.prefundStartAge >= g.targetAge ? { ...g, prefundStartAge: g.targetAge - 1 } : g)); // guard against an inverted/zero saving window
+    s.events = (s.events || []).map((e) => ({
+        id: e.id || uid(),
+        name: e.name || "Event",
+        age: typeof e.age === "number" && !isNaN(e.age) ? e.age : s.profile.currentAge,
+        amount: typeof e.amount === "number" && !isNaN(e.amount) ? e.amount : 0,
+        accountId: e.accountId || (s.accounts[0] ? s.accounts[0].id : ""),
+        inflationAdjusted: e.inflationAdjusted !== false,
+    }));
+    s.withdrawal = s.withdrawal || {};
+    if (typeof s.withdrawal.age !== "number" || isNaN(s.withdrawal.age))
+        s.withdrawal.age = s.profile.retirementAge;
+    if (typeof s.withdrawal.rate !== "number" || isNaN(s.withdrawal.rate))
+        s.withdrawal.rate = 4;
     delete s.income;
     delete s.expenses;
     return s;
@@ -186,15 +241,19 @@ function simulate(state, scenarioDelta = 0) {
         const allocations = stage && stage.allocations ? stage.allocations : {};
         const allocSum = accounts.reduce((s2, a) => s2 + (allocations[a.id] || 0), 0);
         const allocScale = allocSum > 100 ? 100 / allocSum : 1; // never let allocations claim more than 100% of the pool
+        const eventsThisYear = state.events.filter((e) => e.age === age);
         const accountDetail = accounts.map((a, i) => {
             const startBal = accBal[i];
             const rate = a.returnRate + scenarioDelta;
             const growth = startBal * (rate / 100);
             const pct = (allocations[a.id] || 0) * allocScale;
             const contribution = investableSurplus > 0 ? investableSurplus * (pct / 100) : 0;
-            const endBal = startBal + growth + contribution;
+            const oneTime = eventsThisYear
+                .filter((e) => e.accountId === a.id)
+                .reduce((s2, e) => s2 + (e.inflationAdjusted ? e.amount * inflFactor : e.amount), 0);
+            const endBal = startBal + growth + contribution + oneTime;
             accBal[i] = endBal;
-            return { id: a.id, name: a.name, type: a.type, locked: a.locked, unlockAge: a.unlockAge, startBal, growth, contribution, endBal };
+            return { id: a.id, name: a.name, type: a.type, locked: a.locked, unlockAge: a.unlockAge, startBal, growth, contribution, oneTime, endBal };
         });
         const acctContrib = accountDetail.reduce((s2, a) => s2 + a.contribution, 0);
         const totalContrib = acctContrib + goalContrib;
@@ -202,14 +261,14 @@ function simulate(state, scenarioDelta = 0) {
         const netWorth = accBal.reduce((s2, b) => s2 + b, 0) + goalBal.reduce((s2, b) => s2 + Math.max(b, 0), 0);
         rows.push({
             age, inflFactor, stageName: stage ? stage.name : "No stage defined", stageIcon: stage ? stage.icon : null, stageTaxRate: taxRate,
-            startNetWorth: prevNetWorth, netWorth, accounts: accountDetail, goals: goalDetail,
+            startNetWorth: prevNetWorth, netWorth, accounts: accountDetail, goals: goalDetail, eventsThisYear,
             grossIncome, tax, afterTaxIncome, expenseItems, totalExpenses, totalContrib, surplus,
         });
         prevNetWorth = netWorth;
     }
     return { rows, goalShortfall };
 }
-const dv = (nominal, inflFactor, mode) => (mode === "real" ? nominal / inflFactor : nominal);
+const dv = (nominal, inflFactor, mode) => (mode === "real" && inflFactor ? nominal / inflFactor : nominal);
 // average annual amount a goal pulls from cash flow during a given stage's age range
 // (a goal's saving window doesn't have to line up with stage boundaries)
 // inflates the contribution the same way simulate() does, so the preview matches reality
@@ -420,6 +479,8 @@ function FinancialPlanner() {
     }, [state.stages, state.profile]);
     const healthIssues = useMemo(() => {
         const issues = [];
+        if (state.profile.lifeExpectancy < state.profile.currentAge)
+            issues.push({ tab: "profile", text: `"Plan to age" (${state.profile.lifeExpectancy}) is earlier than your current age (${state.profile.currentAge}) — the projection has nothing to show.` });
         if (stageGaps.length > 0)
             issues.push({ tab: "stages", text: `No stage covers age${stageGaps.length > 1 ? "s" : ""} ${stageGaps.map(([a, b]) => (a === b ? a : `${a}–${b}`)).join(", ")}.` });
         [...state.stages].sort((a, b) => a.startAge - b.startAge).forEach((s) => {
@@ -439,8 +500,21 @@ function FinancialPlanner() {
         const lockedStillLocked = state.accounts.filter((a) => a.locked && state.profile.retirementAge < a.unlockAge);
         if (lockedStillLocked.length > 0)
             issues.push({ tab: "profile", text: `${lockedStillLocked.map((a) => a.name).join(", ")} unlock${lockedStillLocked.length === 1 ? "s" : ""} after your planned retirement age.` });
+        state.events.forEach((ev) => {
+            if (!state.accounts.some((a) => a.id === ev.accountId))
+                issues.push({ tab: "goals", text: `"${ev.name}" points at an account that no longer exists — it currently has no effect.` });
+        });
+        const flaggedNegativeAccounts = new Set();
+        rows.forEach((r) => {
+            r.accounts.forEach((a) => {
+                if (a.endBal < 0 && !flaggedNegativeAccounts.has(a.id)) {
+                    flaggedNegativeAccounts.add(a.id);
+                    issues.push({ tab: "goals", text: `${a.name} goes negative at age ${r.age} — a one-time outflow may be larger than the balance at that point.` });
+                }
+            });
+        });
         return issues;
-    }, [stageGaps, state.stages, state.goals, state.accounts, state.profile, state.withdrawal, stageSummaries, goalShortfall, rows, investableBalanceNominal, activeScenario]);
+    }, [stageGaps, state.stages, state.goals, state.accounts, state.events, state.profile, state.withdrawal, stageSummaries, goalShortfall, rows, investableBalanceNominal, activeScenario]);
     const update = (path, value) => setState((prev) => { const next = structuredClone(prev); let obj = next; for (let i = 0; i < path.length - 1; i++)
         obj = obj[path[i]]; obj[path[path.length - 1]] = value; return next; });
     const updateListItem = (listName, id, field, value) => setState((prev) => ({ ...prev, [listName]: prev[listName].map((item) => (item.id === id ? { ...item, [field]: value } : item)) }));
@@ -454,6 +528,7 @@ function FinancialPlanner() {
     const removeStageExpense = (stageId, expId) => setState((prev) => ({ ...prev, stages: prev.stages.map((s) => (s.id === stageId ? { ...s, expenses: s.expenses.filter((e) => e.id !== expId) } : s)) }));
     const updateStageAllocation = (stageId, accountId, value) => setState((prev) => ({ ...prev, stages: prev.stages.map((s) => (s.id === stageId ? { ...s, allocations: { ...s.allocations, [accountId]: Math.max(0, Math.min(100, value)) } } : s)) }));
     const addGoal = () => setState((prev) => ({ ...prev, goals: [...prev.goals, { id: uid(), name: "New goal", icon: "Gift", targetAge: prev.profile.currentAge + 5, cost: 10000, returnRate: 3, prefundStartAge: prev.profile.currentAge + 1, contribution: 2000 }] }));
+    const addEvent = () => setState((prev) => ({ ...prev, events: [...prev.events, { id: uid(), name: "New event", age: prev.profile.currentAge + 3, amount: 5000, accountId: prev.accounts[0] ? prev.accounts[0].id : "", inflationAdjusted: true }] }));
     const addScenario = () => setState((prev) => ({ ...prev, scenarios: [...prev.scenarios, { id: uid(), name: "New scenario", delta: 0 }] }));
     const removeScenario = (id) => setState((prev) => { if (prev.scenarios.length <= 1)
         return prev; const scenarios = prev.scenarios.filter((s) => s.id !== id); return { ...prev, scenarios, activeScenarioId: prev.activeScenarioId === id ? scenarios[0].id : prev.activeScenarioId }; });
@@ -496,14 +571,14 @@ function FinancialPlanner() {
     ];
     return (React.createElement(ThemeCtx.Provider, { value: t },
         React.createElement("div", { style: { background: t.bg, color: t.text }, className: "min-h-screen font-sans flex flex-col" },
-            React.createElement("div", { style: { background: t.hero, color: t.heroText }, className: "px-4 pt-6 pb-5" },
+            React.createElement("div", { style: { background: t.hero, color: t.heroText, paddingTop: "calc(env(safe-area-inset-top) + 1.25rem)" }, className: "px-4 pb-5" },
                 React.createElement("div", { className: "flex items-center justify-between gap-2 mb-2" },
                     React.createElement("p", { style: { color: t.heroMuted }, className: "uppercase tracking-widest text-[10px] font-medium" }, "Financial plan"),
                     React.createElement("div", { className: "flex items-center gap-2" },
-                        React.createElement("button", { onClick: toggleTheme, style: { background: "rgba(255,255,255,0.1)" }, className: "p-2 rounded-full active:opacity-60" }, state.theme === "dark" ? React.createElement(Sun, { size: 15, color: t.heroText }) : React.createElement(Moon, { size: 15, color: t.heroText })),
+                        React.createElement("button", { onClick: toggleTheme, style: { background: "rgba(255,255,255,0.1)" }, className: "p-3 rounded-full active:opacity-60" }, state.theme === "dark" ? React.createElement(Sun, { size: 16, color: t.heroText }) : React.createElement(Moon, { size: 16, color: t.heroText })),
                         React.createElement("div", { style: { background: "rgba(255,255,255,0.1)" }, className: "flex items-center rounded-full p-1" },
-                            React.createElement("button", { onClick: () => update(["displayMode"], "nominal"), style: mode === "nominal" ? { background: t.heroText, color: t.hero } : { color: t.heroMuted }, className: "text-[11px] px-2.5 py-1 rounded-full font-medium" }, "Future"),
-                            React.createElement("button", { onClick: () => update(["displayMode"], "real"), style: mode === "real" ? { background: t.heroText, color: t.hero } : { color: t.heroMuted }, className: "text-[11px] px-2.5 py-1 rounded-full font-medium" }, "Today's")))),
+                            React.createElement("button", { onClick: () => update(["displayMode"], "nominal"), style: mode === "nominal" ? { background: t.heroText, color: t.hero } : { color: t.heroMuted }, className: "text-[11px] px-3 py-2.5 rounded-full font-medium" }, "Future"),
+                            React.createElement("button", { onClick: () => update(["displayMode"], "real"), style: mode === "real" ? { background: t.heroText, color: t.hero } : { color: t.heroMuted }, className: "text-[11px] px-3 py-2.5 rounded-full font-medium" }, "Today's")))),
                 React.createElement("h1", { className: "font-serif text-xl mb-1" }, "Where your money is headed"),
                 React.createElement("p", { style: { color: t.heroMuted }, className: "text-[11px] mb-4" },
                     activeScenario.name,
@@ -733,6 +808,34 @@ function FinancialPlanner() {
                                         React.createElement(RemoveBtn, { onClick: () => removeListItem("goals", g.id) }))))));
                         }),
                         state.goals.length === 0 && React.createElement("p", { style: { color: t.textMuted }, className: "text-sm" }, "No goals yet \u2014 add one above.")))),
+                tab === "goals" && (React.createElement(Card, { icon: Zap, title: "One-time inflows & outflows", subtitle: "A bonus, an inheritance, a medical bill \u2014 a single hit to one account in a specific year", right: React.createElement(AddBtn, { onClick: addEvent }, "Event") },
+                    React.createElement("div", { className: "flex flex-col gap-3" },
+                        state.events.map((ev) => {
+                            const isInflow = ev.amount >= 0;
+                            const account = state.accounts.find((a) => a.id === ev.accountId);
+                            return (React.createElement("div", { key: ev.id, style: { background: t.inputBg, borderColor: t.inputBorder }, className: "border rounded-xl p-3" },
+                                React.createElement("div", { className: "flex items-center gap-2 mb-3" },
+                                    React.createElement("div", { style: { background: isInflow ? t.goodSoft : t.dangerSoft, color: isInflow ? t.goodText : t.dangerText }, className: "p-2 rounded-lg shrink-0" }, isInflow ? React.createElement(ArrowUpRight, { size: 16 }) : React.createElement(ArrowDownRight, { size: 16 })),
+                                    React.createElement(TextInput, { className: "font-medium flex-1", value: ev.name, onChange: (e) => updateListItem("events", ev.id, "name", e.target.value) }),
+                                    React.createElement(RemoveBtn, { onClick: () => removeListItem("events", ev.id) })),
+                                React.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                                    React.createElement(Field, { label: "Age it happens" },
+                                        React.createElement(NumInput, { value: ev.age, onChange: (e) => updateListItem("events", ev.id, "age", +e.target.value) })),
+                                    React.createElement(Field, { label: "Amount", hint: "Negative for an outflow/expense" },
+                                        React.createElement(MoneyInput, { value: ev.amount, onChange: (e) => updateListItem("events", ev.id, "amount", +e.target.value) })),
+                                    React.createElement(Field, { label: "Affects account" },
+                                        React.createElement(Select, { value: ev.accountId, onChange: (e) => updateListItem("events", ev.id, "accountId", e.target.value) }, state.accounts.map((a) => React.createElement("option", { key: a.id, value: a.id }, a.name)))),
+                                    React.createElement("label", { className: "flex items-end gap-2 text-sm pb-2.5", style: { color: t.textMuted } },
+                                        React.createElement("input", { type: "checkbox", checked: ev.inflationAdjusted, onChange: (e) => updateListItem("events", ev.id, "inflationAdjusted", e.target.checked) }),
+                                        "Today's $ (grows with inflation)")),
+                                account && account.locked && ev.amount < 0 && (React.createElement("p", { style: { color: t.warnText }, className: "text-xs mt-2" },
+                                    "\u26A0 ",
+                                    account.name,
+                                    " is locked \u2014 make sure it's actually accessible at age ",
+                                    ev.age,
+                                    " before counting on this withdrawal."))));
+                        }),
+                        state.events.length === 0 && React.createElement("p", { style: { color: t.textMuted }, className: "text-sm" }, "No one-time events yet \u2014 add a bonus, windfall, or unexpected cost above.")))),
                 tab === "scenarios" && (React.createElement(Card, { icon: TrendingUp, title: "Return scenarios", subtitle: "Shift every account & goal's return rate by the same amount", right: React.createElement(AddBtn, { onClick: addScenario }, "Scenario") },
                     React.createElement("div", { className: "flex flex-col gap-3" }, state.scenarios.map((sc) => (React.createElement("div", { key: sc.id, style: { borderColor: sc.id === state.activeScenarioId ? t.accent : t.inputBorder, background: sc.id === state.activeScenarioId ? t.accentSoft : t.inputBg }, className: "flex items-center gap-2 border rounded-xl p-3 flex-wrap" },
                         React.createElement("input", { type: "radio", checked: sc.id === state.activeScenarioId, onChange: () => update(["activeScenarioId"], sc.id) }),
@@ -865,105 +968,108 @@ function FinancialPlanner() {
                                 lockedExcluded.map((a) => `${a.name} (unlocks ${a.unlockAge})`).join(", "),
                                 ".")))),
                     React.createElement(Card, { icon: Receipt, title: "Year-by-year ledger", subtitle: "Tap a year for the full breakdown · " + (mode === "real" ? "today's $" : "future $") },
-                        React.createElement("div", { className: "max-h-[32rem] overflow-y-auto -mx-1 flex flex-col gap-2" }, rows.map((r) => {
-                            const isOpen = expandedYear === r.age;
-                            const change = r.netWorth - r.startNetWorth;
-                            const StIcon = ICONS[r.stageIcon] || Sparkles;
-                            const investmentGrowth = r.accounts.reduce((s, a) => s + a.growth, 0) + r.goals.reduce((s, g) => s + g.growth, 0);
-                            const totalIncome = r.afterTaxIncome + investmentGrowth;
-                            return (React.createElement("div", { key: r.age, style: { background: r.age === state.profile.retirementAge ? t.warnBg : t.inputBg, borderColor: t.inputBorder }, className: "border rounded-xl overflow-hidden" },
-                                React.createElement("button", { onClick: () => setExpandedYear(isOpen ? null : r.age), className: "w-full text-left p-3" },
-                                    React.createElement("div", { className: "flex items-center gap-2 mb-2" },
-                                        React.createElement("span", { style: { background: t.accentSoft, color: t.accent }, className: "font-mono text-xs font-medium rounded-full px-2 py-0.5 shrink-0" }, r.age),
-                                        React.createElement(StIcon, { size: 13, color: t.textMuted, className: "shrink-0" }),
-                                        React.createElement("span", { style: { color: t.textMuted }, className: "text-xs truncate flex-1" }, r.stageName),
-                                        change >= 0 ? React.createElement(ArrowUpRight, { size: 14, color: t.goodText, className: "shrink-0" }) : React.createElement(ArrowDownRight, { size: 14, color: t.dangerText, className: "shrink-0" }),
-                                        isOpen ? React.createElement(ChevronUp, { size: 16, color: t.textMuted, className: "shrink-0" }) : React.createElement(ChevronDown, { size: 16, color: t.textMuted, className: "shrink-0" })),
-                                    React.createElement("div", { className: "grid grid-cols-3 gap-2" },
+                        React.createElement("div", { style: { maxHeight: "32rem", overflowY: "auto" } },
+                            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, rows.map((r) => {
+                                const isOpen = expandedYear === r.age;
+                                const change = r.netWorth - r.startNetWorth;
+                                const StIcon = ICONS[r.stageIcon] || Sparkles;
+                                const investmentGrowth = r.accounts.reduce((s, a) => s + a.growth, 0) + r.goals.reduce((s, g) => s + g.growth, 0);
+                                const netOneTime = r.accounts.reduce((s, a) => s + a.oneTime, 0);
+                                const totalIncome = r.afterTaxIncome + investmentGrowth + netOneTime;
+                                return (React.createElement("div", { key: r.age, style: { background: r.age === state.profile.retirementAge ? t.warnBg : t.inputBg, border: "1px solid " + t.inputBorder, borderRadius: 12, overflow: "hidden", flexShrink: 0 } },
+                                    React.createElement("button", { onClick: () => setExpandedYear(isOpen ? null : r.age), style: { width: "100%", textAlign: "left", padding: 12, background: "none", border: "none", display: "block" } },
+                                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
+                                            React.createElement("span", { style: { background: t.accentSoft, color: t.accent, fontFamily: MONO, fontSize: 12, fontWeight: 600, borderRadius: 999, padding: "2px 8px", flexShrink: 0 } }, r.age),
+                                            React.createElement(StIcon, { size: 13, color: t.textMuted, style: { flexShrink: 0 } }),
+                                            React.createElement("span", { style: { color: t.textMuted, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 } }, r.stageName),
+                                            change >= 0 ? React.createElement(ArrowUpRight, { size: 14, color: t.goodText, style: { flexShrink: 0 } }) : React.createElement(ArrowDownRight, { size: 14, color: t.dangerText, style: { flexShrink: 0 } }),
+                                            isOpen ? React.createElement(ChevronUp, { size: 16, color: t.textMuted, style: { flexShrink: 0 } }) : React.createElement(ChevronDown, { size: 16, color: t.textMuted, style: { flexShrink: 0 } })),
+                                        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 } },
+                                            React.createElement("div", null,
+                                                React.createElement("p", { style: { color: t.textMuted, fontSize: 10, margin: 0 } }, "Net worth"),
+                                                React.createElement("p", { style: { color: t.text, fontFamily: MONO, fontSize: 13, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, fmt(dv(r.netWorth, r.inflFactor, mode)))),
+                                            React.createElement("div", null,
+                                                React.createElement("p", { style: { color: t.textMuted, fontSize: 10, margin: 0 } }, "Income (+ growth)"),
+                                                React.createElement("p", { style: { color: t.goodText, fontFamily: MONO, fontSize: 13, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, fmt(dv(totalIncome, r.inflFactor, mode)))),
+                                            React.createElement("div", null,
+                                                React.createElement("p", { style: { color: t.textMuted, fontSize: 10, margin: 0 } }, "Expenses"),
+                                                React.createElement("p", { style: { color: t.dangerText, fontFamily: MONO, fontSize: 13, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, fmt(dv(r.totalExpenses, r.inflFactor, mode)))))),
+                                    isOpen && (React.createElement("div", { style: { borderTop: "1px solid " + t.cardBorder, padding: 12, fontSize: 12, display: "flex", flexDirection: "column", gap: 12 } },
+                                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontFamily: MONO, color: t.textMuted } },
+                                            React.createElement("span", null,
+                                                "Start of year: ",
+                                                fmt(dv(r.startNetWorth, r.inflFactor, mode))),
+                                            React.createElement("span", null,
+                                                "End of year: ",
+                                                fmt(dv(r.netWorth, r.inflFactor, mode)))),
                                         React.createElement("div", null,
-                                            React.createElement("p", { style: { color: t.textMuted }, className: "text-[10px]" }, "Net worth"),
-                                            React.createElement("p", { className: "font-mono text-sm truncate", style: { color: t.text } }, fmt(dv(r.netWorth, r.inflFactor, mode)))),
-                                        React.createElement("div", null,
-                                            React.createElement("p", { style: { color: t.textMuted }, className: "text-[10px]" }, "Income (+ growth)"),
-                                            React.createElement("p", { className: "font-mono text-sm truncate", style: { color: t.goodText } }, fmt(dv(totalIncome, r.inflFactor, mode)))),
-                                        React.createElement("div", null,
-                                            React.createElement("p", { style: { color: t.textMuted }, className: "text-[10px]" }, "Expenses"),
-                                            React.createElement("p", { className: "font-mono text-sm truncate", style: { color: t.dangerText } }, fmt(dv(r.totalExpenses, r.inflFactor, mode)))))),
-                                isOpen && (React.createElement("div", { style: { borderColor: t.cardBorder }, className: "border-t p-3 text-xs flex flex-col gap-3" },
-                                    React.createElement("div", { className: "flex justify-between font-mono", style: { color: t.textMuted } },
-                                        React.createElement("span", null,
-                                            "Start of year: ",
-                                            fmt(dv(r.startNetWorth, r.inflFactor, mode))),
-                                        React.createElement("span", null,
-                                            "End of year: ",
-                                            fmt(dv(r.netWorth, r.inflFactor, mode)))),
-                                    React.createElement("div", null,
-                                        React.createElement("p", { style: { color: t.textMuted }, className: "font-medium uppercase tracking-wide mb-1.5" }, "Every account"),
-                                        React.createElement("div", { className: "flex flex-col gap-1.5 mb-2" }, r.accounts.map((a) => (React.createElement("div", { key: a.id, style: { background: t.chip }, className: "rounded-lg px-2 py-1.5" },
-                                            React.createElement("div", { className: "flex items-center gap-1 mb-0.5" },
-                                                a.locked && React.createElement(Lock, { size: 10, color: t.warnText }),
-                                                React.createElement("span", { style: { color: t.text }, className: "font-sans font-medium" }, a.name),
-                                                React.createElement("span", { style: { color: t.accent }, className: "font-mono ml-auto" }, fmt(dv(a.endBal, r.inflFactor, mode)))),
-                                            React.createElement("p", { style: { color: t.textMuted }, className: "font-mono text-[10px]" },
-                                                fmt(dv(a.startBal, r.inflFactor, mode)),
-                                                " start + ",
-                                                fmt(dv(a.growth, r.inflFactor, mode)),
-                                                " growth + ",
-                                                fmt(dv(a.contribution, r.inflFactor, mode)),
-                                                " in"))))),
-                                        r.goals.filter((g) => g.startBal || g.contribution || g.purchase).length > 0 && (React.createElement(React.Fragment, null,
-                                            React.createElement("p", { style: { color: t.textMuted }, className: "font-medium uppercase tracking-wide mb-1.5" }, "Every goal"),
-                                            React.createElement("div", { className: "flex flex-col gap-1.5" }, r.goals.filter((g) => g.startBal || g.contribution || g.purchase).map((g) => (React.createElement("div", { key: g.id, style: { background: t.accentSoft }, className: "rounded-lg px-2 py-1.5" },
-                                                React.createElement("div", { className: "flex items-center gap-1 mb-0.5" },
-                                                    React.createElement(Target, { size: 10, color: t.accent }),
-                                                    React.createElement("span", { style: { color: t.text }, className: "font-sans font-medium" }, g.name),
-                                                    React.createElement("span", { style: { color: t.accent }, className: "font-mono ml-auto" }, fmt(dv(g.endBal, r.inflFactor, mode)))),
-                                                React.createElement("p", { style: { color: t.textMuted }, className: "font-mono text-[10px]" },
-                                                    fmt(dv(g.startBal, r.inflFactor, mode)),
+                                            React.createElement("p", { style: { color: t.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 } }, "Every account"),
+                                            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 } }, r.accounts.map((a) => (React.createElement("div", { key: a.id, style: { background: t.chip, borderRadius: 8, padding: "6px 8px" } },
+                                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, marginBottom: 2 } },
+                                                    a.locked && React.createElement(Lock, { size: 10, color: t.warnText }),
+                                                    React.createElement("span", { style: { color: t.text, fontFamily: "inherit", fontWeight: 600 } }, a.name),
+                                                    React.createElement("span", { style: { color: t.accent, fontFamily: MONO, marginLeft: "auto" } }, fmt(dv(a.endBal, r.inflFactor, mode)))),
+                                                React.createElement("p", { style: { color: t.textMuted, fontFamily: MONO, fontSize: 10, margin: 0 } },
+                                                    fmt(dv(a.startBal, r.inflFactor, mode)),
                                                     " start + ",
-                                                    fmt(dv(g.growth, r.inflFactor, mode)),
-                                                    " growth",
-                                                    g.purchase ? " − " + fmt(dv(g.purchase, r.inflFactor, mode)) + " purchased" : "")))))))),
-                                    React.createElement("div", null,
-                                        React.createElement("p", { style: { color: t.textMuted }, className: "font-medium uppercase tracking-wide mb-1" }, "Cash flow"),
-                                        React.createElement("div", { className: "flex justify-between font-mono py-0.5" },
-                                            React.createElement("span", { style: { color: t.text } }, "Gross income"),
-                                            React.createElement("span", { style: { color: t.textMuted } }, fmt(dv(r.grossIncome, r.inflFactor, mode)))),
-                                        React.createElement("div", { className: "flex justify-between font-mono py-0.5" },
-                                            React.createElement("span", { style: { color: t.text } },
-                                                "Tax (",
-                                                r.stageTaxRate,
-                                                "%)"),
-                                            React.createElement("span", { style: { color: t.dangerText } },
-                                                "-",
-                                                fmt(dv(r.tax, r.inflFactor, mode)))),
-                                        React.createElement("div", { className: "flex justify-between font-mono py-0.5" },
-                                            React.createElement("span", { style: { color: t.text } }, "After-tax income"),
-                                            React.createElement("span", { style: { color: t.textMuted } }, fmt(dv(r.afterTaxIncome, r.inflFactor, mode)))),
-                                        r.expenseItems.map((e, i) => (React.createElement("div", { key: i, className: "flex justify-between font-mono py-0.5 pl-2" },
-                                            React.createElement("span", { style: { color: t.textMuted } },
-                                                "\u2212 ",
-                                                e.name),
-                                            React.createElement("span", { style: { color: t.textMuted } },
-                                                "-",
-                                                fmt(dv(e.amount, r.inflFactor, mode)))))),
-                                        React.createElement("div", { className: "flex justify-between font-mono py-0.5" },
-                                            React.createElement("span", { style: { color: t.text } }, "Contributions out"),
-                                            React.createElement("span", { style: { color: t.dangerText } },
-                                                "-",
-                                                fmt(dv(r.totalContrib, r.inflFactor, mode)))),
-                                        React.createElement("div", { style: { borderColor: t.cardBorder }, className: "flex justify-between font-mono py-1 border-t mt-1" },
-                                            React.createElement("span", { style: { color: t.text }, className: "font-medium" }, "Surplus"),
-                                            React.createElement("span", { style: { color: r.surplus < 0 ? t.dangerText : t.goodText }, className: "font-medium" }, fmt(dv(r.surplus, r.inflFactor, mode))))),
-                                    React.createElement("p", { style: { color: t.textMuted }, className: "opacity-70" },
-                                        "Inflation index this year: \u00D7",
-                                        r.inflFactor.toFixed(2))))));
-                        }))))),
+                                                    fmt(dv(a.growth, r.inflFactor, mode)),
+                                                    " growth + ",
+                                                    fmt(dv(a.contribution, r.inflFactor, mode)),
+                                                    " in",
+                                                    a.oneTime ? (a.oneTime >= 0 ? " + " : " − ") + fmt(Math.abs(dv(a.oneTime, r.inflFactor, mode))) + " one-time" : ""))))),
+                                            r.goals.filter((g) => g.startBal || g.contribution || g.purchase).length > 0 && (React.createElement(React.Fragment, null,
+                                                React.createElement("p", { style: { color: t.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 } }, "Every goal"),
+                                                React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, r.goals.filter((g) => g.startBal || g.contribution || g.purchase).map((g) => (React.createElement("div", { key: g.id, style: { background: t.accentSoft, borderRadius: 8, padding: "6px 8px" } },
+                                                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4, marginBottom: 2 } },
+                                                        React.createElement(Target, { size: 10, color: t.accent }),
+                                                        React.createElement("span", { style: { color: t.text, fontFamily: "inherit", fontWeight: 600 } }, g.name),
+                                                        React.createElement("span", { style: { color: t.accent, fontFamily: MONO, marginLeft: "auto" } }, fmt(dv(g.endBal, r.inflFactor, mode)))),
+                                                    React.createElement("p", { style: { color: t.textMuted, fontFamily: MONO, fontSize: 10, margin: 0 } },
+                                                        fmt(dv(g.startBal, r.inflFactor, mode)),
+                                                        " start + ",
+                                                        fmt(dv(g.growth, r.inflFactor, mode)),
+                                                        " growth",
+                                                        g.purchase ? " − " + fmt(dv(g.purchase, r.inflFactor, mode)) + " purchased" : "")))))))),
+                                        React.createElement("div", null,
+                                            React.createElement("p", { style: { color: t.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 } }, "Cash flow"),
+                                            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontFamily: MONO, padding: "2px 0" } },
+                                                React.createElement("span", { style: { color: t.text } }, "Gross income"),
+                                                React.createElement("span", { style: { color: t.textMuted } }, fmt(dv(r.grossIncome, r.inflFactor, mode)))),
+                                            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontFamily: MONO, padding: "2px 0" } },
+                                                React.createElement("span", { style: { color: t.text } },
+                                                    "Tax (",
+                                                    r.stageTaxRate,
+                                                    "%)"),
+                                                React.createElement("span", { style: { color: t.dangerText } },
+                                                    "-",
+                                                    fmt(dv(r.tax, r.inflFactor, mode)))),
+                                            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontFamily: MONO, padding: "2px 0" } },
+                                                React.createElement("span", { style: { color: t.text } }, "After-tax income"),
+                                                React.createElement("span", { style: { color: t.textMuted } }, fmt(dv(r.afterTaxIncome, r.inflFactor, mode)))),
+                                            r.expenseItems.map((e, i) => (React.createElement("div", { key: i, style: { display: "flex", justifyContent: "space-between", fontFamily: MONO, padding: "2px 0 2px 8px" } },
+                                                React.createElement("span", { style: { color: t.textMuted } },
+                                                    "\u2212 ",
+                                                    e.name),
+                                                React.createElement("span", { style: { color: t.textMuted } },
+                                                    "-",
+                                                    fmt(dv(e.amount, r.inflFactor, mode)))))),
+                                            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontFamily: MONO, padding: "2px 0" } },
+                                                React.createElement("span", { style: { color: t.text } }, "Contributions out"),
+                                                React.createElement("span", { style: { color: t.dangerText } },
+                                                    "-",
+                                                    fmt(dv(r.totalContrib, r.inflFactor, mode)))),
+                                            React.createElement("div", { style: { borderTop: "1px solid " + t.cardBorder, display: "flex", justifyContent: "space-between", fontFamily: MONO, padding: "4px 0", marginTop: 4 } },
+                                                React.createElement("span", { style: { color: t.text, fontWeight: 600 } }, "Surplus"),
+                                                React.createElement("span", { style: { color: r.surplus < 0 ? t.dangerText : t.goodText, fontWeight: 600 } }, fmt(dv(r.surplus, r.inflFactor, mode))))),
+                                        React.createElement("p", { style: { color: t.textMuted, opacity: 0.7, margin: 0 } },
+                                            "Inflation index this year: \u00D7",
+                                            r.inflFactor.toFixed(2))))));
+                            })))))),
                 React.createElement("div", { className: "flex flex-col items-center gap-2 pb-2" },
                     React.createElement("div", { className: "flex items-center gap-4" },
                         React.createElement("button", { onClick: exportBackup, style: { color: t.accent }, className: "text-xs underline" }, "Export backup"),
                         React.createElement("button", { onClick: () => importInputRef.current && importInputRef.current.click(), style: { color: t.accent }, className: "text-xs underline" }, "Import backup"),
-                        React.createElement("input", { ref: importInputRef, type: "file", accept: "application/json", onChange: importBackup, className: "hidden" })),
+                        React.createElement("input", { ref: importInputRef, type: "file", accept: "application/json", onChange: importBackup, style: { display: "none" } })),
                     React.createElement("button", { onClick: resetAll, style: { color: t.textMuted }, className: "text-xs underline" }, "Reset plan to example data"))),
             React.createElement("div", { style: { background: t.navBg, borderColor: t.navBorder, paddingBottom: "env(safe-area-inset-bottom)" }, className: "fixed bottom-0 left-0 right-0 border-t flex z-20" }, tabs.map(({ id, label, Icon }) => (React.createElement("button", { key: id, onClick: () => setTab(id), className: "flex-1 flex flex-col items-center gap-0.5 py-2.5 active:opacity-60" },
                 React.createElement(Icon, { size: 20, color: tab === id ? t.navActive : t.navInactive }),

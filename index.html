@@ -47,7 +47,28 @@
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js").catch(() => {});
+        navigator.serviceWorker.register("./sw.js").then((reg) => {
+          // Check for a newer sw.js every time the app opens.
+          reg.update();
+          reg.addEventListener("updatefound", () => {
+            const newWorker = reg.installing;
+            if (!newWorker) return;
+            newWorker.addEventListener("statechange", () => {
+              if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+                // A new version finished installing behind the scenes — ask before swapping it in.
+                if (confirm("An update to Financial Plan is ready. Reload now?")) {
+                  newWorker.postMessage("SKIP_WAITING");
+                }
+              }
+            });
+          });
+        }).catch(() => {});
+      });
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
       });
     }
   </script>

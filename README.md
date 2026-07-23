@@ -57,9 +57,24 @@ it the way you'd treat a backup of anything else you don't want to lose.
 If you come back to me for more changes, I'll hand you an updated `app.js`
 (and possibly `index.html`/`sw.js`). Replace those files in the repo (same
 paths), commit, and GitHub Pages redeploys automatically in a minute or two.
-One thing to do every time: bump the `CACHE_NAME` version string at the top
-of `sw.js` (e.g. `fin-plan-v1` → `fin-plan-v2`) — otherwise the service
-worker may keep serving the old cached version for a while on your phone.
+
+The service worker (`sw.js`) is set up so `index.html` and `app.js` are
+always fetched fresh from the network first (falling back to the cached
+copy only if you're offline) — so a normal redeploy + reopening the app
+should just work. Two things make this more reliable:
+
+1. **Bump `CACHE_NAME` in `sw.js`** every time you update it (e.g.
+   `fin-plan-v2` → `fin-plan-v3`). This forces old cached CDN/static assets
+   to be dropped, not just the app code.
+2. The app now detects when a new version has finished installing in the
+   background and will pop up **"An update is ready. Reload now?"** the
+   next time you open it — tap OK and it swaps in immediately.
+
+If it ever seems stuck on an old version despite that: close the app fully
+(swipe it away from the app switcher), reopen it, and if it's still stale,
+delete the home-screen icon and re-add it from Safari (Share → Add to Home
+Screen) — that guarantees a clean slate. Your data itself is untouched by
+any of this, since it lives in `localStorage`, separate from the cache.
 
 ## One honest caveat
 
